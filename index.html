@@ -343,38 +343,111 @@
   {id:'puppy',container:'basket',name:'小狗',feature:'perfect',duration:1650}
  ];
  const soundConfig=JSON.parse($('#sound-config').textContent);
+ const debugAudio=params.get('debugAudio')==='1';
  class LocalSounds {
-  constructor(config){this.config=config;this.muted=false;this.context=null;this.buffers={};this.active=new Set();this.epoch=0;}
+  constructor(config){
+   this.config=config;this.muted=false;this.context=null;this.buffers={};this.active=new Set();this.epoch=0;
+   this.assets=Object.fromEntries(Object.keys(config.assets).map(key=>[key,{status:'已内嵌，等待首次点击解码',mime:'audio/wav'}]));
+   this.events=[];this.lastError='无';this.lastResult='等待真实点击';this.sessionStatus='尚未设置';this.onchange=()=>{};
+  }
+  report(message){this.events.push(new Date().toLocaleTimeString()+' '+message);this.events=this.events.slice(-14);this.onchange();}
+  fail(where,error){const detail=where+': '+(error?.name||'Error')+': '+(error?.message||String(error));this.lastError=detail;this.lastResult='失败：'+detail;this.report(detail);return false;}
+  // Only call from the advance, unmute or diagnostic click handler, before any await.
   unlock(){
    if(this.muted)return;
    try{
-    if(!this.context){
-     const AudioContext=window.AudioContext||window.webkitAudioContext;if(!AudioContext)return;
+    if(navigator.audioSession){
+     try{navigator.audioSession.type='playback';this.sessionStatus=navigator.audioSession.type;}
+     catch(error){this.sessionStatus='设置失败';this.fail('AudioSession',error);}
+    }else this.sessionStatus='此浏览器不支持 AudioSession';
+    if(!this.context||this.context.state==='closed'){
+     const AudioContext=window.AudioContext||window.webkitAudioContext;
+     if(!AudioContext){this.fail('初始化',new Error('Web Audio API 不可用'));return;}
      this.context=new AudioContext();this.gain=this.context.createGain();this.gain.gain.value=.75;this.gain.connect(this.context.destination);
+     this.context.onstatechange=()=>this.report('AudioContext → '+this.context.state);
      for(const [key,uri] of Object.entries(this.config.assets)){
       const bytes=Uint8Array.from(atob(uri.split(',')[1]),c=>c.charCodeAt(0));
-      this.buffers[key]=this.context.decodeAudioData(bytes.buffer).catch(()=>null);
+      this.assets[key]={status:'解码中',mime:uri.slice(5,uri.indexOf(';')),bytes:bytes.length};
+      // Callbacks also support older Safari implementations of decodeAudioData.
+      this.buffers[key]=new Promise((resolve,reject)=>this.context.decodeAudioData(bytes.buffer,resolve,reject)).then(buffer=>{
+       Object.assign(this.assets[key],{status:'解码成功',duration:buffer.duration,sampleRate:buffer.sampleRate,channels:buffer.numberOfChannels});this.onchange();return buffer;
+      }).catch(error=>{this.assets[key].status='解码失败';this.fail('解码 '+key,error);return null;});
      }
     }
-    if(this.context.state==='suspended')this.resuming=this.context.resume().catch(()=>{});
-   }catch{/* An unavailable audio device never blocks the story. */}
+    // iOS can enter "interrupted" after a call, lock screen or app switch.
+    // Invoke resume synchronously inside the actual user gesture, never from a timer.
+    if(this.context.state!=='running'){
+     this.report('真实操作中 resume()；原状态 '+this.context.state);
+     this.resuming=Promise.resolve(this.context.resume()).then(()=>{this.report('resume() 完成：'+this.context.state);return true;}).catch(error=>this.fail('resume()',error));
+    }else this.resuming=Promise.resolve(true);
+    this.onchange();
+   }catch(error){this.fail('初始化',error);}
   }
-  async play(animal,event){
-   const cue=this.config.profiles[animal]?.[event];if(!cue||this.muted)return;
-   this.unlock();const epoch=this.epoch;
+  play(animal,event){const cue=this.config.profiles[animal]?.[event];if(cue)return this.playCue(cue,animal+'/'+event);}
+  async playCue(cue,label){
+   if(this.muted){this.lastResult='未播放：页面已静音';this.report(this.lastResult);return false;}
+   const epoch=this.epoch;let timer;
    try{
-    const buffer=await this.buffers[cue.asset];await this.resuming;
-    if(!buffer||this.muted||epoch!==this.epoch||document.hidden||this.context.state!=='running')return;
+    if(!this.context)throw new Error('音频尚未初始化，请点击测试或故事按钮');
+    if(!this.buffers[cue.asset])throw new Error('找不到音效：'+cue.asset);
+    const [buffer,resumed]=await Promise.race([
+     Promise.all([this.buffers[cue.asset],this.resuming]),
+     new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('解码或 resume() 超过 2 秒；请查看 context 状态后再次点击')),2000);})
+    ]);clearTimeout(timer);
+    if(this.muted||epoch!==this.epoch||document.hidden)return false;
+    if(!buffer)throw new Error('音效解码失败：'+cue.asset);
+    if(resumed===false)return false;
+    if(this.context.state!=='running')throw new Error('AudioContext 未运行：'+this.context.state);
     const source=this.context.createBufferSource(),gain=this.context.createGain();
     source.buffer=buffer;gain.gain.value=cue.volume??.5;source.connect(gain);gain.connect(this.gain);
-    this.active.add(source);source.onended=()=>{this.active.delete(source);source.disconnect();gain.disconnect();};source.start();
-   }catch{}
+    this.active.add(source);source.onended=()=>{this.active.delete(source);source.disconnect();gain.disconnect();this.report('音源结束：'+label);};source.start();
+    this.lastResult='Web Audio 已提交播放：'+label+'（不代表扬声器已出声）';this.report(this.lastResult);return true;
+   }catch(error){clearTimeout(timer);if(epoch!==this.epoch||this.muted||document.hidden)return false;return this.fail('播放 '+label,error);}
   }
-  stop(){this.epoch++;for(const source of this.active){try{source.stop();}catch{}}this.active.clear();}
-  toggle(){this.muted=!this.muted;if(this.muted)this.stop();else this.unlock();}
+  stop(){this.epoch++;for(const source of this.active){try{source.stop();}catch{}}this.active.clear();if(this.testPlayer)this.testPlayer.pause();this.onchange();}
+  toggle(){this.muted=!this.muted;if(this.muted)this.stop();else this.unlock();this.onchange();}
  }
 
  const sounds=new LocalSounds(soundConfig);
+ if(debugAudio){
+  const panel=document.createElement('aside');panel.id='audio-diagnostics';panel.setAttribute('aria-label','音频诊断');
+  panel.style.cssText='position:fixed;z-index:100;top:8px;left:8px;right:8px;max-width:650px;max-height:65dvh;overflow:auto;padding:14px;background:#fffdf5f5;color:#263c34;border:2px solid #718e78;border-radius:12px;font:14px/1.5 system-ui;text-align:left;box-shadow:0 4px 20px #0002;touch-action:pan-y';
+  panel.innerHTML='<strong>音频诊断 · audio-fix-1</strong><p style="margin:6px 0">仅此链接显示。请先点击测试；“已播放”仅代表浏览器接受请求，不能证明扬声器有声音。可对比手机静音开关、媒体音量和蓝牙输出。</p><label>音效 <select id="audio-test-asset" aria-label="选择测试音效"></select></label> <button type="button" id="audio-test-web">测试故事音效</button> <button type="button" id="audio-test-media">测试系统播放器</button><pre id="audio-diagnostic-state" style="white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:0;font:12px/1.5 ui-monospace,monospace"></pre>';
+  panel.querySelectorAll('button,select').forEach(el=>{el.style.cssText='min-height:44px;padding:8px;margin:4px 2px;border:1px solid #718e78;border-radius:6px;background:#f4efe1;color:#263c34;font:inherit;touch-action:manipulation';});
+  document.body.append(panel);
+  const select=panel.querySelector('select'),output=panel.querySelector('pre');
+  for(const key of Object.keys(soundConfig.assets)){const option=document.createElement('option');option.value=key;option.textContent=key;select.append(option);}
+  const player=new Audio();player.preload='none';player.setAttribute('playsinline','');sounds.testPlayer=player;
+  let mediaResult='等待测试',mediaEpoch=0;
+  function update(){output.textContent=JSON.stringify({
+   version:'audio-fix-1',engine:'Web Audio API；系统播放器按钮仅作对照测试',
+   context:sounds.context?.state||'未初始化（等待点击）',contextTime:sounds.context?Number(sounds.context.currentTime.toFixed(3)):null,
+   audioSession:sounds.sessionStatus,sessionState:navigator.audioSession?.state||'不支持/未知',
+   muted:sounds.muted,masterVolume:.75,activeSources:sounds.active.size,documentHidden:document.hidden,
+   wavSupport:player.canPlayType('audio/wav; codecs="1"')||player.canPlayType('audio/wav')||'浏览器未报告支持',
+   source:'7 段 data:audio/wav;base64 内嵌资源，无外部音频 URL，无基础路径依赖',assets:sounds.assets,
+   lastResult:sounds.lastResult,lastError:sounds.lastError,
+   media:{result:mediaResult,readyState:player.readyState,networkState:player.networkState,paused:player.paused,currentTime:player.currentTime,volume:player.volume,muted:player.muted,error:player.error?{code:player.error.code,message:player.error.message}:null},
+   userAgent:navigator.userAgent,events:sounds.events
+  },null,2);}
+  sounds.onchange=update;
+  panel.querySelector('#audio-test-web').addEventListener('click',()=>{mediaEpoch++;sounds.stop();sounds.unlock();sounds.playCue({asset:select.value,volume:.6},'测试/'+select.value);update();});
+  panel.querySelector('#audio-test-media').addEventListener('click',()=>{
+   sounds.stop();const epoch=++mediaEpoch;
+   if(sounds.muted){mediaResult='未播放：页面已静音';update();return;}
+   // play() is called directly in this click stack, with no await or deferred unlock.
+   try{
+    player.src=soundConfig.assets[select.value];player.muted=false;player.volume=.45;
+    mediaResult='已调用 play()，等待 Promise';const attempt=player.play();update();
+    if(attempt?.then)attempt.then(()=>{if(epoch===mediaEpoch){mediaResult='play() 已成功（请确认实际是否听到）';update();}}).catch(error=>{if(epoch===mediaEpoch){mediaResult=error.name+': '+error.message;sounds.fail('HTMLAudioElement.play()',error);}});
+   }catch(error){mediaResult=error.name+': '+error.message;sounds.fail('HTMLAudioElement.play()',error);}
+  });
+  for(const event of ['loadedmetadata','loadeddata','canplay','playing','ended','pause','error'])player.addEventListener(event,()=>{
+   if(event==='error'&&player.error){mediaResult='MediaError '+player.error.code+': '+player.error.message;sounds.fail('系统播放器',new Error(mediaResult));}
+   sounds.report('系统播放器事件：'+event);update();
+  });
+  setInterval(update,500);update();
+ }
  const icons={reveal:'<path d="m18 11 14 13-14 13"/>',grow:'<path d="M19 9H9v10m0-10 13 13m7 17h10V29m0 10L26 26"/>',send:'<path d="M25 15h13v24H12V26M8 14h18m-18 0 7-7M8 14l7 7"/>',love:'<path d="M24 38 8 23C-2 8 17 1 24 14 31 1 50 8 40 23Z"/>',restart:'<path d="M12 17a15 15 0 1 1-2 17M12 7v11H2"/>'};
  const speaker='<path d="M8 19h8l10-8v26L16 29H8Z"/>';
  let index=0,state='closed',busy=false;
