@@ -369,7 +369,10 @@
       const bytes=Uint8Array.from(atob(uri.split(',')[1]),c=>c.charCodeAt(0));
       this.assets[key]={status:'解码中',mime:uri.slice(5,uri.indexOf(';')),bytes:bytes.length};
       // Callbacks also support older Safari implementations of decodeAudioData.
-      this.buffers[key]=new Promise((resolve,reject)=>this.context.decodeAudioData(bytes.buffer,resolve,reject)).then(buffer=>{
+      this.buffers[key]=new Promise((resolve,reject)=>{
+       const decoding=this.context.decodeAudioData(bytes.buffer,resolve,reject);
+       if(decoding?.then)decoding.then(resolve,reject);
+      }).then(buffer=>{
        Object.assign(this.assets[key],{status:'解码成功',duration:buffer.duration,sampleRate:buffer.sampleRate,channels:buffer.numberOfChannels});this.onchange();return buffer;
       }).catch(error=>{this.assets[key].status='解码失败';this.fail('解码 '+key,error);return null;});
      }
@@ -424,10 +427,10 @@
    context:sounds.context?.state||'未初始化（等待点击）',contextTime:sounds.context?Number(sounds.context.currentTime.toFixed(3)):null,
    audioSession:sounds.sessionStatus,sessionState:navigator.audioSession?.state||'不支持/未知',
    muted:sounds.muted,masterVolume:.75,activeSources:sounds.active.size,documentHidden:document.hidden,
-   wavSupport:player.canPlayType('audio/wav; codecs="1"')||player.canPlayType('audio/wav')||'浏览器未报告支持',
-   source:'7 段 data:audio/wav;base64 内嵌资源，无外部音频 URL，无基础路径依赖',assets:sounds.assets,
    lastResult:sounds.lastResult,lastError:sounds.lastError,
    media:{result:mediaResult,readyState:player.readyState,networkState:player.networkState,paused:player.paused,currentTime:player.currentTime,volume:player.volume,muted:player.muted,error:player.error?{code:player.error.code,message:player.error.message}:null},
+   wavSupport:player.canPlayType('audio/wav; codecs="1"')||player.canPlayType('audio/wav')||'浏览器未报告支持',
+   source:'7 段 data:audio/wav;base64 内嵌资源，无外部音频 URL，无基础路径依赖',assets:sounds.assets,
    userAgent:navigator.userAgent,events:sounds.events
   },null,2);}
   sounds.onchange=update;
