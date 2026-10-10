@@ -1,0 +1,24 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>舞台设置</title>
+<style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;background:#faf5e9;color:#344c45;max-width:680px;padding:40px 24px;margin:auto;line-height:1.8}h1{font-size:28px}label{display:block;margin:28px 0}input{display:block;width:100%;accent-color:#718e78;height:48px}button,a{font:inherit;padding:14px 24px;border:0;border-radius:12px;background:#718e78;color:white;text-decoration:none;display:inline-block;cursor:pointer}button{background:#e7decc;color:#344c45;margin-right:12px}p{color:#67736a}</style>
+<h1>舞台设置</h1><p>仅供演示前调整。正式舞台不显示本页文字，也没有设置入口。</p>
+<fieldset style="border:1px solid #d4d9c9;border-radius:14px;padding:10px 22px"><legend>演示模式</legend>
+<label style="margin:12px 0"><input type="radio" name="mode" value="full" checked style="display:inline;width:24px;height:24px;vertical-align:middle;margin-right:12px">完整模式：揭晓 → 展示特点 → 送回</label>
+<label style="margin:12px 0"><input type="radio" name="mode" value="simple" style="display:inline;width:24px;height:24px;vertical-align:middle;margin-right:12px">简化模式：揭晓 → 送回</label>
+<p>简化模式由孩子通过肢体动作表达动物特点。两种模式均需孩子点击后才进行下一步。小狗在两种模式下都采用“出现 → 开心摇尾 → 男孩抱起”的特殊结尾。</p></fieldset>
+<label>操作栏高度：<output id="height-value">18%</output><input id="height" aria-label="操作栏占屏幕高度百分比" type="range" min="15" max="25" value="18"></label>
+<label>按钮整体上移：<output id="lift-value">0 px</output><input id="lift" aria-label="按钮整体上移像素" type="range" min="0" max="100" step="5" value="0"></label>
+<p>默认操作栏占屏幕18%，按钮靠近底部。上移按钮时，舞台可用高度也会相应缩小，动物不会遮挡按钮。</p>
+<button id="reset">恢复默认</button><a href="./index.html">进入纯视觉舞台</a><p id="notice" role="status"></p>
+<script>
+const h=document.querySelector('#height'),l=document.querySelector('#lift'),modes=[...document.querySelectorAll('[name="mode"]')],entry=document.querySelector('a');
+const entryPath=entry.getAttribute('href');
+try{const c=JSON.parse(localStorage.getItem('zoo-stage-layout')||'{}')||{};h.value=c.height??18;l.value=c.lift??0;modes.find(m=>m.value===(c.mode==='simple'?'simple':'full')).checked=true;}catch{}
+function update(save=true){
+ const config={height:Number(h.value),lift:Number(l.value),mode:modes.find(m=>m.checked).value};
+ document.querySelector('#height-value').value=h.value+'%';document.querySelector('#lift-value').value=l.value+' px';
+ entry.href=entryPath+'?'+new URLSearchParams(config);
+ if(save)try{localStorage.setItem('zoo-stage-layout',JSON.stringify(config));document.querySelector('#notice').textContent='已保存，点击进入舞台即可应用。';}catch{document.querySelector('#notice').textContent='点击进入舞台即可应用本次设置。';}
+}
+h.oninput=l.oninput=()=>update();modes.forEach(m=>m.onchange=()=>update());
+document.querySelector('#reset').onclick=()=>{h.value=18;l.value=0;modes[0].checked=true;update();};update(false);
+</script></html>
